@@ -1,4 +1,4 @@
-﻿using Android.Views.Inspector;
+﻿using Android.Views.Inspectors;
 using AndroidX.AppCompat.App;
 
 namespace Plugin.BottomSheet.Android;
@@ -9,8 +9,9 @@ namespace Plugin.BottomSheet.Android;
 /// </summary>
 /// <remarks>
 /// The dialog window fills the screen and sits above the activity window and the activity's sub-windows
-/// (toolbar overflow menus, popup menus, spinner drop-downs). Forwarding only to the activity leaves those
-/// popups unreachable, so a touch that lands on one of them goes to that popup instead.
+/// (toolbar overflow menus, popup menus, spinner drop-downs). The window manager therefore sends every touch
+/// to the dialog, and a popup below it never sees its own touches or the outside touches that dismiss it.
+/// This listener routes each gesture the way the window manager would if the dialog window were not there.
 /// </remarks>
 internal sealed class BottomSheetDialogTouchOutsideListener : Java.Lang.Object, View.IOnTouchListener
 {
@@ -21,6 +22,7 @@ internal sealed class BottomSheetDialogTouchOutsideListener : Java.Lang.Object, 
     private readonly global::Android.App.Dialog _dialog;
 
     private View? _gestureTarget;
+    private bool _swallowGesture;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="BottomSheetDialogTouchOutsideListener"/> class.
@@ -50,22 +52,36 @@ internal sealed class BottomSheetDialogTouchOutsideListener : Java.Lang.Object, 
         // Pick the target on DOWN and keep it for the rest of the gesture.
         if (e.ActionMasked == MotionEventActions.Down)
         {
-            _gestureTarget = FindSubWindowAt(e.RawX, e.RawY);
+            _swallowGesture = false;
+            _gestureTarget = FindSubWindow(e.RawX, e.RawY, containsPoint: true);
+
+            // A touch-modal popup (e.g. an overflow menu) gets touches outside its bounds and dismisses itself.
+            // Like the window manager, don't pass that gesture on to the activity.
+            if (_gestureTarget is null
+                && FindSubWindow(e.RawX, e.RawY, containsPoint: false) is View touchModalPopup)
+            {
+                DispatchToWindow(touchModalPopup, e);
+                _swallowGesture = true;
+            }
         }
 
-        if (_gestureTarget is not null
-            && _gestureTarget.IsAttachedToWindow)
+        if (_swallowGesture == false)
         {
-            DispatchToWindow(_gestureTarget, e);
-        }
-        else
-        {
-            _ = _activity.DispatchTouchEvent(e);
+            if (_gestureTarget is not null
+                && _gestureTarget.IsAttachedToWindow)
+            {
+                DispatchToWindow(_gestureTarget, e);
+            }
+            else
+            {
+                _ = _activity.DispatchTouchEvent(e);
+            }
         }
 
         if (e.ActionMasked is MotionEventActions.Up or MotionEventActions.Cancel)
         {
             _gestureTarget = null;
+            _swallowGesture = false;
         }
 
         return false;
@@ -90,12 +106,16 @@ internal sealed class BottomSheetDialogTouchOutsideListener : Java.Lang.Object, 
     }
 
     /// <summary>
-    /// Finds the topmost visible sub-window (for example a popup menu) of this app that contains the given screen point.
+    /// Finds the topmost visible sub-window (for example a popup menu) of this app.
     /// </summary>
     /// <param name="rawX">Screen x coordinate.</param>
     /// <param name="rawY">Screen y coordinate.</param>
-    /// <returns>The root view of the sub-window, or null if there is none at that point.</returns>
-    private View? FindSubWindowAt(float rawX, float rawY)
+    /// <param name="containsPoint">
+    /// True to find the sub-window that contains the point.
+    /// False to find a touch-modal sub-window that does not contain it.
+    /// </param>
+    /// <returns>The root view of the sub-window, or null if there is none.</returns>
+    private View? FindSubWindow(float rawX, float rawY, bool containsPoint)
     {
         // WindowInspector (API 29+) is the only public way to list the app's windows.
         if (OperatingSystem.IsAndroidVersionAtLeast(29) == false)
@@ -123,10 +143,19 @@ internal sealed class BottomSheetDialogTouchOutsideListener : Java.Lang.Object, 
 
             root.GetLocationOnScreen(location);
 
-            if (rawX >= location[0]
+            bool hit = rawX >= location[0]
                 && rawX < location[0] + root.Width
                 && rawY >= location[1]
-                && rawY < location[1] + root.Height)
+                && rawY < location[1] + root.Height;
+
+            if (containsPoint && hit)
+            {
+                return root;
+            }
+
+            if (containsPoint == false
+                && hit == false
+                && IsTouchModal(layoutParams))
             {
                 return root;
             }
@@ -134,4 +163,12 @@ internal sealed class BottomSheetDialogTouchOutsideListener : Java.Lang.Object, 
 
         return null;
     }
+
+    /// <summary>
+    /// Gets whether the window manager sends a window the touches outside its bounds.
+    /// </summary>
+    /// <param name="layoutParams">The window's layout parameters.</param>
+    /// <returns>True if the window is touch-modal.</returns>
+    private static bool IsTouchModal(WindowManagerLayoutParams layoutParams)
+        => (layoutParams.Flags & (WindowManagerFlags.NotFocusable | WindowManagerFlags.NotTouchModal)) == 0;
 }
