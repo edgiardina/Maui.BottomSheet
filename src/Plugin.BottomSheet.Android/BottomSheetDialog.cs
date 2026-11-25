@@ -54,7 +54,7 @@ public sealed class BottomSheetDialog : Google.Android.Material.BottomSheet.Bott
             throw new NotSupportedException($"{nameof(Context)} must be of type {nameof(AndroidX.AppCompat.App.AppCompatActivity)}.");
         }
 
-        _touchOutsideListener = new BottomSheetDialogTouchOutsideListener(activity);
+        _touchOutsideListener = new BottomSheetDialogTouchOutsideListener(activity, this);
 
         _backgroundColorDrawable = new ColorDrawable();
 
